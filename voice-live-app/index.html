@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Live Masking</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎤 Voice Live Masking</h1>
+            <p>Sistema di voice masking in tempo reale con Azure Voice Live API</p>
+        </header>
+
+        <main>
+            <div class="controls">
+                
+                <div class="button-section">
+                    <button id="startBtn" class="btn primary">🎙️ Start Recording</button>
+                    <button id="stopBtn" class="btn secondary" disabled>⏹️ Stop Recording</button>
+                </div>
+                
+                <div class="status">
+                    <span id="status" class="status-text">🔴 Disconnesso</span>
+                </div>
+            </div>
+
+            <div class="visualizer">
+                <canvas id="visualizer" width="400" height="100"></canvas>
+            </div>
+
+            <div class="avatar-section">
+                <h3>🤖 Avatar</h3>
+                <div class="avatar-container">
+                    <video id="avatarVideo" autoplay muted playsinline></video>
+                    <div class="avatar-placeholder">
+                        <p>L'avatar apparirà qui durante la conversazione</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <div class="log-section">
+            <h3>📝 Log</h3>
+            <div id="log" class="log-container"></div>
+            <button id="clearLog" class="btn secondary small">🗑️ Clear Log</button>
+        </div>
+    </div>
+
+    <script src="client.js"></script>
+</body>
+</html>
