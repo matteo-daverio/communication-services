@@ -12,7 +12,8 @@
   "description": "",
   "dependencies": {
     "@azure/communication-calling": "^1.37.2",
-    "@azure/communication-common": "^2.4.0"
+    "@azure/communication-common": "^2.4.0",
+    "microsoft-cognitiveservices-speech-sdk": "^1.45.0"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^11.0.0",

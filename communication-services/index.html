@@ -24,6 +24,52 @@
         <button id="start-video-button" type="button" disabled="true">Start Video</button>
         <button id="stop-video-button" type="button" disabled="true">Stop Video</button>
         <br>
+        <!-- Step 2.3 -->
+        <div style="margin: 10px 0; padding: 10px; border: 2px solid #2196F3; border-radius: 5px;">
+            <h4>🎤 Speech Recognition - Step 2.3: Integrazione con Chiamata</h4>
+            
+            <!-- Indicatore stato chiamata -->
+            <div id="call-status-indicator" style="
+                padding: 8px; 
+                margin-bottom: 10px; 
+                background: #f5f5f5; 
+                border: 1px solid #ddd; 
+                border-radius: 3px; 
+                text-align: center;
+            ">
+                📞 Nessuna chiamata attiva
+            </div>
+            
+            <!-- Controlli manuali -->
+            <div style="margin-bottom: 10px;">
+                <button id="start-transcription-button" style="background: #4CAF50; color: white; padding: 8px 16px; margin-right: 10px;">
+                    ▶️ Avvia Trascrizione
+                </button>
+                <button id="stop-transcription-button" style="background: #f44336; color: white; padding: 8px 16px;" disabled>
+                    ⏹️ Ferma Trascrizione
+                </button>
+            </div>
+            
+            <!-- Area trascrizione -->
+            <div id="transcription-display" style="border: 1px solid #ddd; border-radius: 5px; padding: 10px; background: #f9f9f9;">
+                <h5 style="margin: 0 0 10px 0; color: #333;">📝 Trascrizione in tempo reale:</h5>
+                <div id="transcription-text" style="
+                    min-height: 100px; 
+                    max-height: 200px; 
+                    overflow-y: auto; 
+                    background: white; 
+                    padding: 10px; 
+                    border: 1px solid #ccc; 
+                    border-radius: 3px; 
+                    font-family: Arial, sans-serif; 
+                    line-height: 1.4;
+                    white-space: pre-wrap;
+                ">
+                    📞 Avvia una chiamata, oppure clicca "Avvia Trascrizione" manualmente...
+                </div>
+            </div>
+        </div>
+        
         <br>
         <div id="connectedLabel" style="color: #13bb13;" hidden>Call is connected!</div>
         <br>

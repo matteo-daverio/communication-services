@@ -1,6 +1,7 @@
 const { CallClient, VideoStreamRenderer, LocalVideoStream } = require('@azure/communication-calling');
 const { AzureCommunicationTokenCredential } = require('@azure/communication-common');
 const { AzureLogger, setLogLevel } = require("@azure/logger");
+const speechSdk = require("microsoft-cognitiveservices-speech-sdk");
 
 // Set the log level and output
 setLogLevel('verbose');
@@ -16,6 +17,17 @@ let incomingCall;
 let localVideoStream;
 let localVideoStreamRenderer;
 
+// Speech Services
+let speechConfig;
+let audioConfig;
+let speechRecognizer;
+let isSpeechRecognitionActive = false;
+let transcriptionText = "";
+
+// Keys
+const SPEECH_KEY = "8uWUVin2iDOx5aHsKRJqqLlWa0G6C08XKf3Zt7AYHf6vnV5Hkuz0JQQJ99BHACfhMk5XJ3w3AAAYACOGdnaN";
+const SPEECH_REGION = "swedencentral";
+
 // UI widgets
 let userAccessToken = document.getElementById('user-access-token');
 let calleeAcsUserId = document.getElementById('callee-acs-user-id');
@@ -28,6 +40,172 @@ let stopVideoButton = document.getElementById('stop-video-button');
 let connectedLabel = document.getElementById('connectedLabel');
 let remoteVideosGallery = document.getElementById('remoteVideosGallery');
 let localVideoContainer = document.getElementById('localVideoContainer');
+let transcriptionTextElement = document.getElementById('transcription-text');
+let startTranscriptionButton = document.getElementById('start-transcription-button');
+let stopTranscriptionButton = document.getElementById('stop-transcription-button');
+let callStatusIndicator = document.getElementById('call-status-indicator'); 
+
+/**
+ * Inizializza la configurazione di Azure Speech Services
+ * Step 2.1: Setup Speech Recognition Base
+ */
+async function initializeSpeechRecognition() {
+    try {
+        console.log('Inizializzazione Speech Recognition...');
+        
+        // Configura Azure Speech
+        speechConfig = speechSdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
+        speechConfig.speechRecognitionLanguage = "it-IT"; // Italiano
+        
+        // Configura l'input audio dal microfono di default
+        audioConfig = speechSdk.AudioConfig.fromDefaultMicrophoneInput();
+        
+        // Crea il recognizer
+        speechRecognizer = new speechSdk.SpeechRecognizer(speechConfig, audioConfig);
+        
+        // Event handler per riconoscimento in corso (testo parziale)
+        speechRecognizer.recognizing = (s, e) => {
+            const partialText = e.result.text;
+            console.log(`RECOGNIZING: ${partialText}`);
+            updateTranscriptionDisplay(`[Riconoscendo...] ${partialText}`, false);
+        };
+        
+        // Event handler per riconoscimento completato (testo finale)
+        speechRecognizer.recognized = (s, e) => {
+            if (e.result.reason === speechSdk.ResultReason.RecognizedSpeech) {
+                const finalText = e.result.text;
+                console.log(`RECOGNIZED: ${finalText}`);
+                
+                if (finalText.trim()) {
+                    transcriptionText += finalText + " ";
+                    updateTranscriptionDisplay(transcriptionText, true);
+                }
+            }
+        };
+        
+        // Event handler per errori o cancellazioni
+        speechRecognizer.canceled = (s, e) => {
+            console.log(`CANCELED: Reason=${e.reason}`);
+            
+            if (e.reason === speechSdk.CancellationReason.Error) {
+                console.error(`Speech recognition error: ${e.errorDetails}`);
+                updateTranscriptionDisplay(`❌ Errore: ${e.errorDetails}`, true);
+            }
+        };
+        
+        // Event handler per fine sessione
+        speechRecognizer.sessionStopped = (s, e) => {
+            console.log('Speech recognition session stopped');
+            isSpeechRecognitionActive = false;
+            updateUIButtons();
+        };
+        
+        return true;
+        
+    } catch (error) {
+        console.error('Errore nell\'inizializzazione di Speech Recognition:', error);
+        return false;
+    }
+}
+
+/**
+ * Avvia il riconoscimento vocale continuo
+ */
+async function startSpeechRecognition() {
+    try {
+        if (!speechRecognizer) {
+            const success = await initializeSpeechRecognition();
+            if (!success) {
+                throw new Error('Inizializzazione Speech Recognition fallita');
+            }
+        }
+        
+        console.log('Avvio riconoscimento vocale...');
+        transcriptionText = ""; // Reset testo
+        updateTranscriptionDisplay("🎤 Riconoscimento vocale attivo... Inizia a parlare!", true);
+        
+        speechRecognizer.startContinuousRecognitionAsync(
+            () => {
+                console.log('✅ Riconoscimento vocale avviato');
+                isSpeechRecognitionActive = true;
+                updateUIButtons();
+            },
+            (error) => {
+                console.error('❌ Errore nell\'avvio del riconoscimento:', error);
+                updateTranscriptionDisplay(`❌ Errore nell'avvio: ${error}`, true);
+                isSpeechRecognitionActive = false;
+                updateUIButtons();
+            }
+        );
+        
+    } catch (error) {
+        console.error('Errore nell\'avvio del riconoscimento vocale:', error);
+        updateTranscriptionDisplay(`❌ Errore: ${error.message}`, true);
+    }
+}
+
+/**
+ * Ferma il riconoscimento vocale
+ */
+async function stopSpeechRecognition() {
+    try {
+        if (speechRecognizer && isSpeechRecognitionActive) {
+            console.log('Fermo riconoscimento vocale...');
+            
+            speechRecognizer.stopContinuousRecognitionAsync(
+                () => {
+                    console.log('✅ Riconoscimento vocale fermato');
+                    isSpeechRecognitionActive = false;
+                    updateTranscriptionDisplay(transcriptionText + "\n\n🛑 Riconoscimento vocale fermato", true);
+                    updateUIButtons();
+                },
+                (error) => {
+                    console.error('❌ Errore nel fermare il riconoscimento:', error);
+                    isSpeechRecognitionActive = false;
+                    updateUIButtons();
+                }
+            );
+        }
+    } catch (error) {
+        console.error('Errore nel fermare il riconoscimento vocale:', error);
+    }
+}
+
+/**
+ * Aggiorna la visualizzazione della trascrizione
+ */
+function updateTranscriptionDisplay(text, isFinal) {
+    if (transcriptionTextElement) {
+        if (isFinal) {
+            transcriptionTextElement.innerHTML = text.replace(/\n/g, '<br>');
+        } else {
+            // Per il testo parziale, mostra in corsivo
+            transcriptionTextElement.innerHTML = transcriptionText + '<i style="color: #666;">' + text + '</i>';
+        }
+        
+        // Auto-scroll verso il basso
+        transcriptionTextElement.scrollTop = transcriptionTextElement.scrollHeight;
+    }
+}
+
+/**
+ * Aggiorna lo stato dei pulsanti UI
+ */
+function updateUIButtons() {
+    const isCallActive = call && call.state === 'Connected';
+    
+    if (startTranscriptionButton) {
+        startTranscriptionButton.disabled = isSpeechRecognitionActive || isCallActive;
+    }
+    if (stopTranscriptionButton) {
+        stopTranscriptionButton.disabled = !isSpeechRecognitionActive;
+    }
+    
+    // Mostra informazioni sullo stato
+    if (isCallActive) {
+        console.log('🔄 Pulsanti aggiornati - Modalità automatica attiva');
+    }
+}
 
 /**
  * Using the CallClient, initialize a CallAgent instance with a CommunicationUserCredential which will enable us to make outgoing calls and receive incoming calls. 
@@ -116,6 +294,10 @@ subscribeToCall = (call) => {
         // Subscribe to call's 'stateChanged' event for value changes.
         call.on('stateChanged', async () => {
             console.log(`Call state changed: ${call.state}`);
+
+            // Aggiorna indicatore di stato
+            updateCallStatusIndicator(call.state);
+
             if (call.state === 'Connected') {
                 connectedLabel.hidden = false;
                 acceptCallButton.disabled = true;
@@ -125,8 +307,13 @@ subscribeToCall = (call) => {
                 stopVideoButton.disabled = false;
                 remoteVideosGallery.hidden = false;
 
-                const remoteAudioStream = call.remoteAudioStreams[0];
-                const mediaStream = await remoteAudioStream.getMediaStream();
+                // Step 2.3: Avvia automaticamente la trascrizione se abilitata
+                console.log('📞 Chiamata connessa - Controllo trascrizione automatica...');
+                if (!isSpeechRecognitionActive) {
+                    console.log('🎤 Avvio automatico trascrizione...');
+                    updateTranscriptionDisplay("📞 Chiamata connessa! Avvio trascrizione automatica...", true);
+                    await startSpeechRecognitionForCall();
+                }
 
             } else if (call.state === 'Disconnected') {
                 connectedLabel.hidden = true;
@@ -135,6 +322,13 @@ subscribeToCall = (call) => {
                 startVideoButton.disabled = true;
                 stopVideoButton.disabled = true;
                 console.log(`Call ended, call end reason={code=${call.callEndReason.code}, subCode=${call.callEndReason.subCode}}`);
+            
+                // Step 2.3: Ferma automaticamente la trascrizione quando la chiamata termina
+                console.log('📞 Chiamata terminata - Fermo trascrizione...');
+                if (isSpeechRecognitionActive) {
+                    updateTranscriptionDisplay(transcriptionText + "\n\n📞 Chiamata terminata - Trascrizione fermata automaticamente", true);
+                    await stopSpeechRecognition();
+                }
             }   
         });
 
@@ -174,6 +368,69 @@ subscribeToCall = (call) => {
         });
     } catch (error) {
         console.error(error);
+    }
+}
+
+/**
+ * Avvia il riconoscimento vocale specificamente per la chiamata
+ * Step 2.3: Integrazione con Call State
+ */
+async function startSpeechRecognitionForCall() {
+    try {
+        if (!call || call.state !== 'Connected') {
+            console.log('❌ Nessuna chiamata attiva - impossibile avviare trascrizione');
+            updateTranscriptionDisplay("❌ Nessuna chiamata attiva", true);
+            return false;
+        }
+        
+        console.log('🎤 Avvio trascrizione per chiamata...');
+        const success = await startSpeechRecognition();
+        
+        if (success) {
+            updateTranscriptionDisplay("📞 Trascrizione attiva durante la chiamata\n🎤 Parla e vedrai la trascrizione qui...\n\n", true);
+        }
+        
+        return success;
+        
+    } catch (error) {
+        console.error('Errore nell\'avvio trascrizione per chiamata:', error);
+        updateTranscriptionDisplay(`❌ Errore: ${error.message}`, true);
+        return false;
+    }
+}
+
+/**
+ * Aggiorna l'indicatore di stato della chiamata
+ */
+function updateCallStatusIndicator(callState) {
+    if (callStatusIndicator) {
+        let statusText = "";
+        let statusColor = "";
+        
+        switch (callState) {
+            case 'Connected':
+                statusText = "📞 Chiamata Connessa";
+                statusColor = "#4CAF50";
+                break;
+            case 'Connecting':
+                statusText = "📞 Connessione in corso...";
+                statusColor = "#FF9800";
+                break;
+            case 'Disconnected':
+                statusText = "📞 Chiamata Terminata";
+                statusColor = "#f44336";
+                break;
+            case 'Ringing':
+                statusText = "📞 Squillo...";
+                statusColor = "#2196F3";
+                break;
+            default:
+                statusText = `📞 Stato: ${callState}`;
+                statusColor = "#666";
+        }
+        
+        callStatusIndicator.innerHTML = `<strong style="color: ${statusColor};">${statusText}</strong>`;
+        console.log(`📞 Stato chiamata aggiornato: ${callState}`);
     }
 }
 
@@ -344,4 +601,30 @@ removeLocalVideoStream = async() => {
 hangUpCallButton.addEventListener("click", async () => {
     // end the current call
     await call.hangUp();
+});
+
+/**
+ * Event listeners per i pulsanti - Step 2.2
+ */
+document.addEventListener('DOMContentLoaded', () => {
+    // Pulsanti trascrizione (Step 2.2)
+    if (startTranscriptionButton) {
+        startTranscriptionButton.onclick = async () => {
+            if (call && call.state === 'Connected') {
+                await startSpeechRecognitionForCall();
+            } else {
+                await startSpeechRecognition();
+            }
+        };
+    }
+    
+    if (stopTranscriptionButton) {
+        stopTranscriptionButton.onclick = async () => {
+            await stopSpeechRecognition();
+        };
+    }
+    
+    // Inizializza lo stato dei pulsanti
+    updateUIButtons();
+    updateCallStatusIndicator('Disconnected');
 });
