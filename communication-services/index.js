@@ -1,13 +1,6 @@
 const { CallClient, VideoStreamRenderer, LocalVideoStream } = require('@azure/communication-calling');
 const { AzureCommunicationTokenCredential } = require('@azure/communication-common');
-const { AzureLogger, setLogLevel } = require("@azure/logger");
 const speechSdk = require("microsoft-cognitiveservices-speech-sdk");
-
-// Set the log level and output
-setLogLevel('verbose');
-AzureLogger.log = (...args) => {
-    console.log(...args);
-};
 
 // Calling web sdk objects
 let callAgent;
@@ -19,16 +12,28 @@ let localVideoStreamRenderer;
 
 // Speech Services
 let speechConfig;
-let audioConfig;
 let speechRecognizer;
 let isSpeechRecognitionActive = false;
 let transcriptionText = "";
 
 let speechSynthesizer;
-let isSpeechSynthesisActive = false;
 let selectedVoice = "it-IT-ElsaNeural"; // Voce di default
 
-// Keys
+// Streaming / synthesis state (pruned to essentials)
+let partialTextBuffer = "";          // Testo già sintetizzato in streaming
+let synthesisQueue = [];              // Coda segmenti in attesa
+let isSynthesisInProgress = false;    // Flag sintesi in corso
+let minWordsForSynthesis = 3;         // Soglia minima parole per iniziare
+let lastPartialText = "";            // Ultimo testo parziale ricevuto
+let hasSynthesizedAnything = false;   // Se almeno un segmento è stato sintetizzato per la frase corrente
+
+// Speech-to-Speech Pipeline
+let speechToSpeechActive = false;
+let speechToSpeechButton = document.getElementById('speech-to-speech-button');
+let speechToSpeechStatus = document.getElementById('speech-to-speech-status');
+let audioContext; // (attualmente non usato per manipolare l'audio, ma mantenuto per futura estensione)
+
+// Keys (TODO: rimuovere dal client in produzione)
 const SPEECH_KEY = "8uWUVin2iDOx5aHsKRJqqLlWa0G6C08XKf3Zt7AYHf6vnV5Hkuz0JQQJ99BHACfhMk5XJ3w3AAAYACOGdnaN";
 const SPEECH_REGION = "swedencentral";
 
@@ -45,17 +50,12 @@ let connectedLabel = document.getElementById('connectedLabel');
 let remoteVideosGallery = document.getElementById('remoteVideosGallery');
 let localVideoContainer = document.getElementById('localVideoContainer');
 let transcriptionTextElement = document.getElementById('transcription-text');
-let startTranscriptionButton = document.getElementById('start-transcription-button');
-let stopTranscriptionButton = document.getElementById('stop-transcription-button');
 let callStatusIndicator = document.getElementById('call-status-indicator'); 
-
-let testTextInput = document.getElementById('test-text-input');
-let testSynthesisButton = document.getElementById('test-synthesis-button');
-let ttsTestResult = document.getElementById('tts-test-result');
+let tokenCredential; // dichiarazione aggiunta per evitare implicit global
 
 /**
  * Inizializza la configurazione di Azure Speech Services
- * Step 2.1: Setup Speech Recognition Base
+ * Setup Speech Recognition Base
  */
 async function initializeSpeechRecognition() {
     try {
@@ -65,49 +65,7 @@ async function initializeSpeechRecognition() {
         speechConfig = speechSdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
         speechConfig.speechRecognitionLanguage = "it-IT"; // Italiano
         
-        // Configura l'input audio dal microfono di default
-        audioConfig = speechSdk.AudioConfig.fromDefaultMicrophoneInput();
-        
-        // Crea il recognizer
-        speechRecognizer = new speechSdk.SpeechRecognizer(speechConfig, audioConfig);
-        
-        // Event handler per riconoscimento in corso (testo parziale)
-        speechRecognizer.recognizing = (s, e) => {
-            const partialText = e.result.text;
-            console.log(`RECOGNIZING: ${partialText}`);
-            updateTranscriptionDisplay(`[Riconoscendo...] ${partialText}`, false);
-        };
-        
-        // Event handler per riconoscimento completato (testo finale)
-        speechRecognizer.recognized = (s, e) => {
-            if (e.result.reason === speechSdk.ResultReason.RecognizedSpeech) {
-                const finalText = e.result.text;
-                console.log(`RECOGNIZED: ${finalText}`);
-                
-                if (finalText.trim()) {
-                    transcriptionText += finalText + " ";
-                    updateTranscriptionDisplay(transcriptionText, true);
-                }
-            }
-        };
-        
-        // Event handler per errori o cancellazioni
-        speechRecognizer.canceled = (s, e) => {
-            console.log(`CANCELED: Reason=${e.reason}`);
-            
-            if (e.reason === speechSdk.CancellationReason.Error) {
-                console.error(`Speech recognition error: ${e.errorDetails}`);
-                updateTranscriptionDisplay(`❌ Errore: ${e.errorDetails}`, true);
-            }
-        };
-        
-        // Event handler per fine sessione
-        speechRecognizer.sessionStopped = (s, e) => {
-            console.log('Speech recognition session stopped');
-            isSpeechRecognitionActive = false;
-            updateUIButtons();
-        };
-        
+        console.log('✅ Speech Config inizializzato (senza audio config)');
         return true;
         
     } catch (error) {
@@ -117,39 +75,113 @@ async function initializeSpeechRecognition() {
 }
 
 /**
+ * Crea un recognizer con configurazione audio dedicata
+ */
+function createSpeechRecognizer() {
+    try {
+        // Usa una configurazione audio separata per evitare conflitti con ACS
+        const dedicatedAudioConfig = speechSdk.AudioConfig.fromDefaultMicrophoneInput();
+        
+        // Crea un nuovo recognizer per ogni sessione
+        const recognizer = new speechSdk.SpeechRecognizer(speechConfig, dedicatedAudioConfig);
+        
+        console.log('✅ Speech Recognizer creato con audio config dedicato');
+        return recognizer;
+        
+    } catch (error) {
+        console.error('❌ Errore nella creazione del recognizer:', error);
+        return null;
+    }
+}
+
+/**
  * Avvia il riconoscimento vocale continuo
  */
 async function startSpeechRecognition() {
     try {
-        if (!speechRecognizer) {
+        // Ferma eventuali recognizer precedenti
+        if (speechRecognizer) {
+            await stopSpeechRecognition();
+        }
+        if (!speechConfig) {
             const success = await initializeSpeechRecognition();
             if (!success) {
                 throw new Error('Inizializzazione Speech Recognition fallita');
             }
         }
-        
-        console.log('Avvio riconoscimento vocale...');
-        transcriptionText = ""; // Reset testo
+        speechRecognizer = createSpeechRecognizer();
+        if (!speechRecognizer) {
+            throw new Error('Creazione Speech Recognizer fallita');
+        }
+        setupBasicRecognizerEvents();
+        transcriptionText = "";
         updateTranscriptionDisplay("🎤 Riconoscimento vocale attivo... Inizia a parlare!", true);
-        
-        speechRecognizer.startContinuousRecognitionAsync(
-            () => {
-                console.log('✅ Riconoscimento vocale avviato');
-                isSpeechRecognitionActive = true;
-                updateUIButtons();
-            },
-            (error) => {
-                console.error('❌ Errore nell\'avvio del riconoscimento:', error);
-                updateTranscriptionDisplay(`❌ Errore nell'avvio: ${error}`, true);
-                isSpeechRecognitionActive = false;
-                updateUIButtons();
-            }
-        );
-        
+        // Ritorna una Promise che si risolve a true/false
+        return await new Promise(resolve => {
+            speechRecognizer.startContinuousRecognitionAsync(
+                () => {
+                    isSpeechRecognitionActive = true;
+                    updateUIButtons();
+                    resolve(true);
+                },
+                (error) => {
+                    console.error('❌ Errore nell\'avvio del riconoscimento:', error);
+                    updateTranscriptionDisplay(`❌ Errore nell'avvio: ${error}`, true);
+                    isSpeechRecognitionActive = false;
+                    updateUIButtons();
+                    resolve(false);
+                }
+            );
+        });
     } catch (error) {
         console.error('Errore nell\'avvio del riconoscimento vocale:', error);
         updateTranscriptionDisplay(`❌ Errore: ${error.message}`, true);
+        return false;
     }
+}
+
+/**
+ * Configura gli event handlers base per il recognizer
+ */
+function setupBasicRecognizerEvents() {
+    if (!speechRecognizer) return;
+    
+    // Event handler per riconoscimento in corso (testo parziale)
+    speechRecognizer.recognizing = (s, e) => {
+        const partialText = e.result.text;
+        console.log(`RECOGNIZING: ${partialText}`);
+        updateTranscriptionDisplay(`[Riconoscendo...] ${partialText}`, false);
+    };
+    
+    // Event handler per riconoscimento completato (testo finale)
+    speechRecognizer.recognized = (s, e) => {
+        if (e.result.reason === speechSdk.ResultReason.RecognizedSpeech) {
+            const finalText = e.result.text;
+            console.log(`RECOGNIZED: ${finalText}`);
+            
+            if (finalText.trim()) {
+                transcriptionText += finalText + " ";
+                updateTranscriptionDisplay(transcriptionText, true);
+            }
+        }
+    };
+    
+    // Event handler per errori o cancellazioni
+    speechRecognizer.canceled = (s, e) => {
+        console.log(`CANCELED: Reason=${e.reason}`);
+        
+        if (e.reason === speechSdk.CancellationReason.Error) {
+            console.error(`Speech recognition error: ${e.errorDetails}`);
+            updateTranscriptionDisplay(`❌ Errore: ${e.errorDetails}`, true);
+        }
+    };
+    
+    // Event handler per fine sessione
+    speechRecognizer.sessionStopped = (s, e) => {
+        console.log('Speech recognition session stopped');
+        isSpeechRecognitionActive = false;
+        updateUIButtons();
+    };
 }
 
 /**
@@ -163,12 +195,24 @@ async function stopSpeechRecognition() {
             speechRecognizer.stopContinuousRecognitionAsync(
                 () => {
                     console.log('✅ Riconoscimento vocale fermato');
+
+                    // Pulisci il recognizer
+                    speechRecognizer.close();
+                    speechRecognizer = null;
+
                     isSpeechRecognitionActive = false;
                     updateTranscriptionDisplay(transcriptionText + "\n\n🛑 Riconoscimento vocale fermato", true);
                     updateUIButtons();
                 },
                 (error) => {
                     console.error('❌ Errore nel fermare il riconoscimento:', error);
+
+                    // Forza pulizia anche in caso di errore
+                    if (speechRecognizer) {
+                        speechRecognizer.close();
+                        speechRecognizer = null;
+                    }
+
                     isSpeechRecognitionActive = false;
                     updateUIButtons();
                 }
@@ -176,6 +220,14 @@ async function stopSpeechRecognition() {
         }
     } catch (error) {
         console.error('Errore nel fermare il riconoscimento vocale:', error);
+
+        // Forza pulizia in caso di errore
+        if (speechRecognizer) {
+            speechRecognizer.close();
+            speechRecognizer = null;
+        }
+        isSpeechRecognitionActive = false;
+        updateUIButtons();
     }
 }
 
@@ -210,65 +262,6 @@ async function initializeSpeechSynthesis() {
 }
 
 /**
- * Sintetizza il testo in audio
- * Step 3.1: Implementazione sintesi base
- */
-async function synthesizeText(text) {
-    try {
-        if (!text || !text.trim()) {
-            console.log('❌ Nessun testo da sintetizzare');
-            return false;
-        }
-        
-        if (!speechSynthesizer) {
-            const success = await initializeSpeechSynthesis();
-            if (!success) {
-                throw new Error('Inizializzazione Speech Synthesis fallita');
-            }
-        }
-        
-        console.log(`🔊 Sintetizzo: "${text}"`);
-        isSpeechSynthesisActive = true;
-        updateTTSButtons();
-        
-        // Crea SSML con parametri personalizzati
-        const ssml = createSSML(text, selectedVoice);
-
-        console.log(`SSML generato:\n${ssml}`);
-        
-        return new Promise((resolve, reject) => {
-            speechSynthesizer.speakSsmlAsync(
-                ssml,
-                (result) => {
-                    isSpeechSynthesisActive = false;
-                    updateTTSButtons();
-                    
-                    if (result.reason === speechSdk.ResultReason.SynthesizingAudioCompleted) {
-                        console.log('✅ Sintesi completata con successo');
-                        resolve(true);
-                    } else {
-                        console.error('❌ Sintesi fallita:', result.errorDetails);
-                        reject(new Error(result.errorDetails));
-                    }
-                },
-                (error) => {
-                    isSpeechSynthesisActive = false;
-                    updateTTSButtons();
-                    console.error('❌ Errore nella sintesi:', error);
-                    reject(error);
-                }
-            );
-        });
-        
-    } catch (error) {
-        isSpeechSynthesisActive = false;
-        updateTTSButtons();
-        console.error('Errore nella sintesi del testo:', error);
-        throw error;
-    }
-}
-
-/**
  * Crea SSML personalizzato per la sintesi
  */
 function createSSML(text, voice) {
@@ -277,57 +270,6 @@ function createSSML(text, voice) {
                 ${text}
             </voice>
         </speak>`;
-}
-
-/**
- * Aggiorna lo stato dei pulsanti TTS
- */
-function updateTTSButtons() {
-    if (testSynthesisButton) {
-        testSynthesisButton.disabled = isSpeechSynthesisActive;
-        testSynthesisButton.textContent = isSpeechSynthesisActive ? '🔊 Sintetizzando...' : '🔊 Testa Sintesi';
-    }
-}
-
-/**
- * Testa la sintesi vocale
- */
-async function testSpeechSynthesis() {
-    try {
-        const testText = testTextInput ? testTextInput.value.trim() : 'Ciao, questo è un test della sintesi vocale italiana.';
-        
-        if (!testText) {
-            if (ttsTestResult) {
-                ttsTestResult.innerHTML = '<div style="color: orange;">⚠️ Inserisci del testo da sintetizzare</div>';
-            }
-            return false;
-        }
-        
-        if (ttsTestResult) {
-            ttsTestResult.innerHTML = '<div style="color: blue;">🔊 Sintesi in corso...</div>';
-        }
-        
-        const success = await synthesizeText(testText);
-        
-        if (success && ttsTestResult) {
-            ttsTestResult.innerHTML = `
-                <div style="color: green;">
-                    ✅ Sintesi completata!<br>
-                    - Testo: "${testText}"<br>
-                    - Voce: ${selectedVoice}<br>
-                </div>
-            `;
-        }
-        
-        return success;
-        
-    } catch (error) {
-        console.error('Errore nel test di sintesi:', error);
-        if (ttsTestResult) {
-            ttsTestResult.innerHTML = `<div style="color: red;">❌ Errore: ${error.message}</div>`;
-        }
-        return false;
-    }
 }
 
 /**
@@ -348,25 +290,342 @@ function updateTranscriptionDisplay(text, isFinal) {
 }
 
 /**
- * Aggiorna lo stato dei pulsanti UI
+ * Inizializza la pipeline Speech-to-Speech
  */
-function updateUIButtons() {
-    const isCallActive = call && call.state === 'Connected';
-    
-    if (startTranscriptionButton) {
-        startTranscriptionButton.disabled = isSpeechRecognitionActive || isCallActive;
-    }
-    if (stopTranscriptionButton) {
-        stopTranscriptionButton.disabled = !isSpeechRecognitionActive;
-    }
-    
-    updateTTSButtons();
-
-    // Mostra informazioni sullo stato
-    if (isCallActive) {
-        console.log('🔄 Pulsanti aggiornati - Modalità automatica attiva');
+async function initializeSpeechToSpeechPipeline() {
+    try {
+        console.log('🔄 Inizializzazione pipeline Speech-to-Speech...');
+        
+        // Verifica che sia STT che TTS siano configurati
+        if (!speechRecognizer) {
+            const sttSuccess = await initializeSpeechRecognition();
+            if (!sttSuccess) {
+                throw new Error('Inizializzazione STT fallita');
+            }
+        }
+        
+        if (!speechSynthesizer) {
+            const ttsSuccess = await initializeSpeechSynthesis();
+            if (!ttsSuccess) {
+                throw new Error('Inizializzazione TTS fallita');
+            }
+        }
+        
+        // Inizializza Web Audio API per la manipolazione dell'audio
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        
+        console.log('✅ Pipeline Speech-to-Speech inizializzata');
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Errore nell\'inizializzazione pipeline:', error);
+        return false;
     }
 }
+
+/**
+ * Avvia la pipeline Speech-to-Speech
+ */
+async function startSpeechToSpeechPipeline() {
+    try {
+        if (!call || call.state !== 'Connected') {
+            throw new Error('Nessuna chiamata attiva');
+        }
+        
+        console.log('🚀 Avvio pipeline Speech-to-Speech...');
+        updateSpeechToSpeechStatus('🔄 Inizializzazione...', 'orange');
+
+        // Reset completo variabili streaming
+        resetStreamingState();
+
+        // Ferma eventuali riconoscimenti precedenti
+        if (speechRecognizer) {
+            await stopSpeechRecognition();
+            // Aspetta un momento per assicurarsi che il microfono sia liberato
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        // Inizializza la pipeline se necessario
+        if (!audioContext) {
+            const success = await initializeSpeechToSpeechPipeline();
+            if (!success) {
+                throw new Error('Inizializzazione pipeline fallita');
+            }
+        }
+
+        // Crea un nuovo recognizer per la pipeline
+        console.log('🎤 Creazione recognizer per pipeline...');
+        speechRecognizer = createSpeechRecognizer();
+        if (!speechRecognizer) {
+            throw new Error('Creazione recognizer pipeline fallita');
+        }
+        
+        // Configura il recognizer per la pipeline
+        await setupPipelineRecognizer();
+        
+        // Avvia il riconoscimento vocale
+        console.log('🎤 Avvio riconoscimento per pipeline...');
+        speechRecognizer.startContinuousRecognitionAsync(
+            () => {
+                console.log('✅ Pipeline Speech-to-Speech con tracking avanzato attiva');
+                speechToSpeechActive = true;
+                updateSpeechToSpeechStatus('🔄 Pipeline Tracking Attiva - Parla!', 'green');
+                updateSpeechToSpeechButtons();
+                
+                // Aggiorna la trascrizione
+                updateTranscriptionDisplay("🔄 Pipeline Speech-to-Speech con tracking avanzato attiva!\n🎤 Nessuna ripetizione garantita...\n\n", true);
+            },
+            (error) => {
+                console.error('❌ Errore nell\'avvio pipeline:', error);
+                speechToSpeechActive = false;
+                updateSpeechToSpeechStatus('❌ Errore nell\'avvio', 'red');
+                updateSpeechToSpeechButtons();
+            }
+        );
+        
+    } catch (error) {
+        console.error('❌ Errore nell\'avvio pipeline Speech-to-Speech:', error);
+        speechToSpeechActive = false;
+        updateSpeechToSpeechStatus(`❌ Errore: ${error.message}`, 'red');
+        updateSpeechToSpeechButtons();
+    }
+}
+
+/**
+ * Ferma la pipeline Speech-to-Speech
+ */
+async function stopSpeechToSpeechPipeline() {
+    try {
+        console.log('🛑 Fermo pipeline Speech-to-Speech...');
+
+        // Reset variabili streaming
+        resetStreamingState();
+        
+        if (speechRecognizer && speechToSpeechActive) {
+            speechRecognizer.stopContinuousRecognitionAsync(
+                () => {
+                    console.log('✅ Pipeline Speech-to-Speech fermata');
+
+                    // Pulisci il recognizer
+                    speechRecognizer.close();
+                    speechRecognizer = null;
+
+                    speechToSpeechActive = false;
+                    updateSpeechToSpeechStatus('🛑 Pipeline Fermata', 'gray');
+                    updateSpeechToSpeechButtons();
+                    
+                    updateTranscriptionDisplay(transcriptionText + "\n\n🛑 Pipeline Speech-to-Speech fermata", true);
+                },
+                (error) => {
+                    console.error('❌ Errore nel fermare pipeline:', error);
+
+                    // Forza pulizia anche in caso di errore
+                    if (speechRecognizer) {
+                        speechRecognizer.close();
+                        speechRecognizer = null;
+                    }
+
+                    speechToSpeechActive = false;
+                    updateSpeechToSpeechStatus('❌ Errore nel fermare', 'red');
+                    updateSpeechToSpeechButtons();
+                }
+            );
+        }
+        
+        // Pulisci risorse audio
+        if (audioContext && audioContext.state !== 'closed') {
+            await audioContext.close();
+            audioContext = null;
+        }
+        
+    } catch (error) {
+        console.error('❌ Errore nel fermare pipeline:', error);
+        speechToSpeechActive = false;
+        updateSpeechToSpeechButtons();
+    }
+}
+
+/**
+ * Configura il recognizer per la pipeline
+ */
+async function setupPipelineRecognizer() {
+    try {
+        if (!speechRecognizer) {
+            throw new Error('Nessun recognizer disponibile');
+        }
+        
+        console.log('🔧 Configurazione recognizer per pipeline...');
+        
+        // Event handler per riconoscimento in corso (pipeline) - SINTESI STABILE
+        speechRecognizer.recognizing = async (s, e) => {
+            const partialText = e.result.text;
+            console.log(`PIPELINE RECOGNIZING: ${partialText}`);
+            updateTranscriptionDisplay(`[Pipeline - Riconoscendo...] ${partialText}`, false);
+
+            // Sintesi streaming del testo parziale con controllo stabilità
+            if (speechToSpeechActive && partialText.trim()) {
+                await handleStreamingSynthesis(partialText);
+            }
+        };
+        
+        // Event handler per riconoscimento completato (pipeline) - COMPLETAMENTO
+        speechRecognizer.recognized = async (s, e) => {
+            if (e.result.reason === speechSdk.ResultReason.RecognizedSpeech) {
+                const finalText = e.result.text;
+                console.log(`PIPELINE RECOGNIZED: ${finalText}`);
+                
+                if (finalText.trim() && speechToSpeechActive) {
+                    // Aggiorna la trascrizione
+                    transcriptionText += `[TU]: ${finalText} `;
+                    updateTranscriptionDisplay(transcriptionText, true);
+                    
+                    // Completa la sintesi finale
+                    console.log('🔄 Completamento sintesi finale...');
+                    updateSpeechToSpeechStatus('🔊 Completamento...', 'blue');
+                    
+                    try {
+                        await completeFinalSynthesis(finalText);
+                        updateSpeechToSpeechStatus('🔄 Pipeline Attiva - Parla!', 'green');
+                    } catch (synthError) {
+                        console.error('❌ Errore completamento sintesi:', synthError);
+                        updateSpeechToSpeechStatus('⚠️ Errore completamento', 'orange');
+                    }
+                }
+            }
+        };
+        
+        // Event handler per errori nella pipeline
+        speechRecognizer.canceled = (s, e) => {
+            console.log(`PIPELINE CANCELED: Reason=${e.reason}`);
+            
+            if (e.reason === speechSdk.CancellationReason.Error) {
+                console.error(`Pipeline error: ${e.errorDetails}`);
+                updateSpeechToSpeechStatus(`❌ Errore: ${e.errorDetails}`, 'red');
+                speechToSpeechActive = false;
+                updateSpeechToSpeechButtons();
+            }
+        };
+
+        // Event handler per fine sessione pipeline - UPDATED con reset tracking
+        speechRecognizer.sessionStopped = (s, e) => {
+            console.log('Pipeline speech recognition session stopped');
+            speechToSpeechActive = false;
+            resetStreamingState();
+            updateSpeechToSpeechButtons();
+        };
+        
+        console.log('✅ Recognizer configurato per pipeline con tracking avanzato');
+        
+    } catch (error) {
+        console.error('❌ Errore configurazione recognizer pipeline:', error);
+        throw error;
+    }
+}
+
+/**
+ * Gestisce la sintesi streaming del testo parziale
+ */
+async function handleStreamingSynthesis(partialText) {
+    const stableWords = getStableWords(partialText, lastPartialText);
+    lastPartialText = partialText;
+    const stableWordList = stableWords.trim().split(/\s+/).filter(w => w);
+    if (!stableWordList.length) return;
+
+    // Primo avvio streaming
+    if (!partialTextBuffer && stableWordList.length >= minWordsForSynthesis) {
+        partialTextBuffer = stableWords.trim();
+        await synthesizeStreamingSegment(partialTextBuffer);
+        hasSynthesizedAnything = true;
+        return;
+    }
+    if (partialTextBuffer) {
+        const current = partialTextBuffer.trim().split(/\s+/);
+        if (stableWordList.length > current.length) {
+            const additional = stableWordList.slice(current.length);
+            if (additional.length) {
+                partialTextBuffer = stableWords.trim();
+                const addText = additional.join(' ');
+                if (!isSynthesisInProgress) {
+                    await synthesizeStreamingSegment(addText);
+                    hasSynthesizedAnything = true;
+                } else {
+                    synthesisQueue.push(addText);
+                }
+            }
+        }
+    }
+}
+
+function getStableWords(currentText, previousText) {
+    if (!previousText) return "";
+    const cur = currentText.trim().split(/\s+/);
+    const prev = previousText.trim().split(/\s+/);
+    const out = [];
+    const len = Math.min(cur.length, prev.length);
+    for (let i = 0; i < len - 1; i++) { // esclude ultima parola (potrebbe mutare)
+        if (cur[i] === prev[i]) out.push(cur[i]); else break;
+    }
+    return out.join(' ');
+}
+
+async function synthesizeStreamingSegment(text) {
+    if (!text || !text.trim()) return false;
+    if (isSynthesisInProgress) { synthesisQueue.push(text); return true; }
+    if (!speechSynthesizer && !(await initializeSpeechSynthesis())) throw new Error('TTS init failed');
+
+    isSynthesisInProgress = true;
+    const ssml = createSSML(text, selectedVoice);
+    return new Promise((resolve, reject) => {
+        speechSynthesizer.speakSsmlAsync(ssml, async result => {
+            isSynthesisInProgress = false;
+            if (result.reason === speechSdk.ResultReason.SynthesizingAudioCompleted) {
+                if (synthesisQueue.length) {
+                    const next = synthesisQueue.shift();
+                    await synthesizeStreamingSegment(next);
+                }
+                resolve(true);
+            } else {
+                reject(new Error(result.errorDetails));
+            }
+        }, err => { isSynthesisInProgress = false; reject(err); });
+    });
+}
+
+async function completeFinalSynthesis(finalText) {
+    // Nessuna sintesi parziale precedente -> sintetizza tutto
+    if (!hasSynthesizedAnything) { await synthesizeStreamingSegment(finalText); resetStreamingState(); return; }
+    if (!partialTextBuffer) { resetStreamingState(); return; }
+
+    const finalWords = finalText.split(/\s+/).filter(w => w);
+    const processed = partialTextBuffer.split(/\s+/).filter(w => w);
+    let i = 0; while (i < Math.min(finalWords.length, processed.length) && finalWords[i].toLowerCase() === processed[i].toLowerCase()) i++;
+    const remaining = finalWords.slice(i);
+    if (remaining.length) await synthesizeStreamingSegment(remaining.join(' '));
+    resetStreamingState();
+}
+
+/**
+ * Aggiorna lo stato della pipeline
+ */
+function updateSpeechToSpeechStatus(message, color) {
+    if (speechToSpeechStatus) speechToSpeechStatus.innerHTML = `<strong style="color:${color};">${message}</strong>`;
+}
+
+/**
+ * Aggiorna i pulsanti della pipeline
+ */
+function updateSpeechToSpeechButtons() {
+    const isCallActive = call && call.state === 'Connected';
+    if (speechToSpeechButton) {
+        speechToSpeechButton.disabled = !isCallActive;
+        speechToSpeechButton.textContent = speechToSpeechActive ? '🛑 Ferma Pipeline' : '🔄 Avvia Pipeline Speech-to-Speech';
+    }
+}
+
+/**
+ * Aggiorna lo stato dei pulsanti UI
+ */
+function updateUIButtons() { updateSpeechToSpeechButtons(); }
 
 /**
  * Using the CallClient, initialize a CallAgent instance with a CommunicationUserCredential which will enable us to make outgoing calls and receive incoming calls. 
@@ -468,12 +727,20 @@ subscribeToCall = (call) => {
                 stopVideoButton.disabled = false;
                 remoteVideosGallery.hidden = false;
 
-                // Step 2.3: Avvia automaticamente la trascrizione se abilitata
+                // Avvia automaticamente la trascrizione se abilitata
                 console.log('📞 Chiamata connessa - Controllo trascrizione automatica...');
+                updateSpeechToSpeechStatus('✅ Pronto per Pipeline', 'green');
+
                 if (!isSpeechRecognitionActive) {
                     console.log('🎤 Avvio automatico trascrizione...');
                     updateTranscriptionDisplay("📞 Chiamata connessa! Avvio trascrizione automatica...", true);
                     await startSpeechRecognitionForCall();
+                }
+
+                // Attiva automaticamente la pipeline
+                if (!speechToSpeechActive) {
+                    console.log('📞 Avvio automatico pipeline...');
+                    await startSpeechToSpeechPipeline();
                 }
 
             } else if (call.state === 'Disconnected') {
@@ -484,12 +751,20 @@ subscribeToCall = (call) => {
                 stopVideoButton.disabled = true;
                 console.log(`Call ended, call end reason={code=${call.callEndReason.code}, subCode=${call.callEndReason.subCode}}`);
             
-                // Step 2.3: Ferma automaticamente la trascrizione quando la chiamata termina
+                //  Ferma automaticamente la trascrizione quando la chiamata termina
                 console.log('📞 Chiamata terminata - Fermo trascrizione...');
                 if (isSpeechRecognitionActive) {
                     updateTranscriptionDisplay(transcriptionText + "\n\n📞 Chiamata terminata - Trascrizione fermata automaticamente", true);
                     await stopSpeechRecognition();
                 }
+
+                // Ferma automaticamente la pipeline quando la chiamata termina
+                if (speechToSpeechActive) {
+                    console.log('📞 Chiamata terminata - Fermo pipeline...');
+                    await stopSpeechToSpeechPipeline();
+                }
+                
+                updateSpeechToSpeechStatus('📞 Chiamata Terminata', 'gray');
             }   
         });
 
@@ -534,7 +809,7 @@ subscribeToCall = (call) => {
 
 /**
  * Avvia il riconoscimento vocale specificamente per la chiamata
- * Step 2.3: Integrazione con Call State
+ * Integrazione con Call State
  */
 async function startSpeechRecognitionForCall() {
     try {
@@ -543,16 +818,11 @@ async function startSpeechRecognitionForCall() {
             updateTranscriptionDisplay("❌ Nessuna chiamata attiva", true);
             return false;
         }
-        
-        console.log('🎤 Avvio trascrizione per chiamata...');
         const success = await startSpeechRecognition();
-        
         if (success) {
             updateTranscriptionDisplay("📞 Trascrizione attiva durante la chiamata\n🎤 Parla e vedrai la trascrizione qui...\n\n", true);
         }
-        
         return success;
-        
     } catch (error) {
         console.error('Errore nell\'avvio trascrizione per chiamata:', error);
         updateTranscriptionDisplay(`❌ Errore: ${error.message}`, true);
@@ -636,58 +906,24 @@ subscribeToRemoteParticipant = (remoteParticipant) => {
  * you can choose to destroy the whole 'Renderer', a specific 'RendererView' or keep them, but this will result in displaying blank video frame.
  */
 subscribeToRemoteVideoStream = async (remoteVideoStream) => {
-    let renderer = new VideoStreamRenderer(remoteVideoStream);
+    const renderer = new VideoStreamRenderer(remoteVideoStream);
     let view;
-    let remoteVideoContainer = document.createElement('div');
-    remoteVideoContainer.className = 'remote-video-container';
-
-    let loadingSpinner = document.createElement('div');
-    loadingSpinner.className = 'loading-spinner';
-    remoteVideoStream.on('isReceivingChanged', () => {
-        try {
-            if (remoteVideoStream.isAvailable) {
-                const isReceiving = remoteVideoStream.isReceiving;
-                const isLoadingSpinnerActive = remoteVideoContainer.contains(loadingSpinner);
-                if (!isReceiving && !isLoadingSpinnerActive) {
-                    remoteVideoContainer.appendChild(loadingSpinner);
-                } else if (isReceiving && isLoadingSpinnerActive) {
-                    remoteVideoContainer.removeChild(loadingSpinner);
-                }
-            }
-        } catch (e) {
-            console.error(e);
-        }
-    });
+    const container = document.createElement('div');
+    container.className = 'remote-video-container';
 
     const createView = async () => {
-        // Create a renderer view for the remote video stream.
         view = await renderer.createView();
-        // Attach the renderer view to the UI.
-        remoteVideoContainer.appendChild(view.target);
-        remoteVideosGallery.appendChild(remoteVideoContainer);
-    }
+        container.appendChild(view.target);
+        remoteVideosGallery.appendChild(container);
+    };
 
-    // Remote participant has switched video on/off
     remoteVideoStream.on('isAvailableChanged', async () => {
         try {
-            if (remoteVideoStream.isAvailable) {
-                await createView();
-            } else {
-                view.dispose();
-                remoteVideosGallery.removeChild(remoteVideoContainer);
-            }
-        } catch (e) {
-            console.error(e);
-        }
+            if (remoteVideoStream.isAvailable) await createView(); else if (view) { view.dispose(); remoteVideosGallery.removeChild(container); }
+        } catch (e) { console.error(e); }
     });
-
-    // Remote participant has video on initially.
     if (remoteVideoStream.isAvailable) {
-        try {
-            await createView();
-        } catch (e) {
-            console.error(e);
-        }
+        try { await createView(); } catch (e) { console.error(e); }
     }
 }
 
@@ -696,103 +932,58 @@ subscribeToRemoteVideoStream = async (remoteVideoStream) => {
  * This will send your local video stream to remote participants so they can view it.
  */
 startVideoButton.onclick = async () => {
-    try {
-        const localVideoStream = await createLocalVideoStream();
-        await call.startVideo(localVideoStream);
-    } catch (error) {
-        console.error(error);
-    }
-}
+    try { const lvs = await createLocalVideoStream(); await call.startVideo(lvs); } catch (e) { console.error(e); }
+};
 
 /**
  * Stop your local video stream.
  * This will stop your local video stream from being sent to remote participants.
  */
-stopVideoButton.onclick = async () => {
-    try {
-        await call.stopVideo(localVideoStream);
-    } catch (error) {
-        console.error(error);
-    }
-}
+stopVideoButton.onclick = async () => { try { await call.stopVideo(localVideoStream); } catch (e) { console.error(e); } };
 
-/**
- * To render a LocalVideoStream, you need to create a new instance of VideoStreamRenderer, and then
- * create a new VideoStreamRendererView instance using the asynchronous createView() method.
- * You may then attach view.target to any UI element. 
- */
 createLocalVideoStream = async () => {
-    const camera = (await deviceManager.getCameras())[0];
-    if (camera) {
-        return new LocalVideoStream(camera);
-    } else {
-        console.error(`No camera device found on the system`);
-    }
-}
+    const cam = (await deviceManager.getCameras())[0];
+    if (cam) return new LocalVideoStream(cam);
+    console.error('Nessuna camera trovata');
+};
 
-/**
- * Display your local video stream preview in your UI
- */
 displayLocalVideoStream = async () => {
     try {
         localVideoStreamRenderer = new VideoStreamRenderer(localVideoStream);
         const view = await localVideoStreamRenderer.createView();
         localVideoContainer.hidden = false;
         localVideoContainer.appendChild(view.target);
-    } catch (error) {
-        console.error(error);
-    } 
-}
+    } catch (e) { console.error(e); }
+};
+
+removeLocalVideoStream = () => {
+    try { if (localVideoStreamRenderer) localVideoStreamRenderer.dispose(); localVideoContainer.hidden = true; } catch (e) { console.error(e); }
+};
+
+hangUpCallButton.addEventListener("click", async () => { if (call) await call.hangUp(); });
 
 /**
- * Remove your local video stream preview from your UI
+ * Event listeners per i pulsanti
  */
-removeLocalVideoStream = async() => {
-    try {
-        localVideoStreamRenderer.dispose();
-        localVideoContainer.hidden = true;
-    } catch (error) {
-        console.error(error);
-    } 
-}
-
-/**
- * End current call
- */
-hangUpCallButton.addEventListener("click", async () => {
-    // end the current call
-    await call.hangUp();
-});
-
-/**
- * Event listeners per i pulsanti - Step 2.2
- */
-document.addEventListener('DOMContentLoaded', async () => {
-    // Pulsanti trascrizione (Step 2.2)
-    if (startTranscriptionButton) {
-        startTranscriptionButton.onclick = async () => {
-            if (call && call.state === 'Connected') {
-                await startSpeechRecognitionForCall();
-            } else {
-                await startSpeechRecognition();
-            }
-        };
-    }
-    
-    if (stopTranscriptionButton) {
-        stopTranscriptionButton.onclick = async () => {
-            await stopSpeechRecognition();
-        };
-    }
-
-    // Event listeners per TTS - Step 3.1
-    if (testSynthesisButton) {
-        testSynthesisButton.onclick = async () => {
-            await testSpeechSynthesis();
+document.addEventListener('DOMContentLoaded', () => {
+    // Event listeners per Pipeline Speech-to-Speech
+    if (speechToSpeechButton) {
+        speechToSpeechButton.onclick = async () => {
+            if (speechToSpeechActive) await stopSpeechToSpeechPipeline(); else await startSpeechToSpeechPipeline();
         };
     }
     
     // Inizializza lo stato dei pulsanti
     updateUIButtons();
     updateCallStatusIndicator('Disconnected');
+    updateSpeechToSpeechStatus('📞 Nessuna chiamata attiva', 'gray');
 });
+
+// Funzione mancante aggiunta per resettare lo stato streaming
+function resetStreamingState() {
+    partialTextBuffer = "";
+    synthesisQueue = [];
+    isSynthesisInProgress = false;
+    lastPartialText = "";
+    hasSynthesizedAnything = false;
+}

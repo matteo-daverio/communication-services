@@ -1,4 +1,3 @@
-<!-- index.html -->
 <!DOCTYPE html>
 <html>
     <head>
@@ -24,9 +23,9 @@
         <button id="start-video-button" type="button" disabled="true">Start Video</button>
         <button id="stop-video-button" type="button" disabled="true">Stop Video</button>
         <br>
-        <!-- Step 2.3 -->
+        
         <div style="margin: 10px 0; padding: 10px; border: 2px solid #2196F3; border-radius: 5px;">
-            <h4>🎤 Speech Recognition - Step 2.3: Integrazione con Chiamata</h4>
+            <h4>🎤 Speech Recognition - Integrazione con Chiamata</h4>
             
             <!-- Indicatore stato chiamata -->
             <div id="call-status-indicator" style="
@@ -39,17 +38,7 @@
             ">
                 📞 Nessuna chiamata attiva
             </div>
-            
-            <!-- Controlli manuali -->
-            <div style="margin-bottom: 10px;">
-                <button id="start-transcription-button" style="background: #4CAF50; color: white; padding: 8px 16px; margin-right: 10px;">
-                    ▶️ Avvia Trascrizione
-                </button>
-                <button id="stop-transcription-button" style="background: #f44336; color: white; padding: 8px 16px;" disabled>
-                    ⏹️ Ferma Trascrizione
-                </button>
-            </div>
-            
+                        
             <!-- Area trascrizione -->
             <div id="transcription-display" style="border: 1px solid #ddd; border-radius: 5px; padding: 10px; background: #f9f9f9;">
                 <h5 style="margin: 0 0 10px 0; color: #333;">📝 Trascrizione in tempo reale:</h5>
@@ -65,40 +54,28 @@
                     line-height: 1.4;
                     white-space: pre-wrap;
                 ">
-                    📞 Avvia una chiamata, oppure clicca "Avvia Trascrizione" manualmente...
+                    📞 Avvia una chiamata per avviare la trascrizione...
                 </div>
             </div>
         </div>
 
-        <!-- Step 3.1 -->
-        <div style="margin: 10px 0; padding: 10px; border: 2px solid #FF9800; border-radius: 5px;">
-            <h4>🔊 Text-to-Speech - Step 3.1</h4>
+        <div id="speech-to-speech-section" class="section">
+            <h3>🔄 Pipeline Speech-to-Speech</h3>
+            <p>Pipeline automatica che sostituisce il tuo audio con sintesi vocale durante la chiamata.</p>
             
-            <!-- Test sintesi -->
-            <div style="margin-bottom: 15px;">
-                <h5 style="margin: 0 0 10px 0;">🧪 Test Sintesi</h5>
-                <input type="text" id="test-text-input" 
-                    placeholder="Inserisci del testo da sintetizzare..." 
-                    value="Ciao, questo è un test della sintesi vocale italiana."
-                    style="width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 3px;">
-                
-                <button id="test-synthesis-button" 
-                        style="background: #FF9800; color: white; padding: 8px 16px; border: none; border-radius: 3px; cursor: pointer;">
-                    🔊 Testa Sintesi
+            <div class="controls">
+                <button id="speech-to-speech-button" disabled>
+                    🔄 Avvia Pipeline Speech-to-Speech
                 </button>
             </div>
             
-            <!-- Risultato test -->
-            <div id="tts-test-result" style="
-                min-height: 60px; 
-                padding: 10px; 
-                background: #f5f5f5; 
-                border: 1px solid #ddd; 
-                border-radius: 3px; 
-                font-family: monospace;
-                margin-bottom: 10px;
-            ">
-                Clicca "Testa Sintesi" per provare la voce selezionata...
+            <div id="speech-to-speech-status" class="status-display">
+                📞 Nessuna chiamata attiva
+            </div>
+            
+            <div class="warning-box">
+                ⚠️ <strong>Importante:</strong> Questa funzione è attiva solo durante le chiamate connesse. 
+                L'audio originale verrà sostituito completamente con la sintesi vocale.
             </div>
         </div>
 
