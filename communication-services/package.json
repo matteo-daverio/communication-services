@@ -1,24 +1,28 @@
 {
   "name": "communication-services",
   "version": "1.0.0",
+  "description": "ACS speech demo",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "npx webpack serve --config webpack.config.js"
+    "build": "webpack",
+    "start": "webpack serve --open",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
-    "@azure/communication-calling": "^1.37.2",
+    "@azure/communication-calling": "^1.36.1",
     "@azure/communication-common": "^2.4.0",
-    "microsoft-cognitiveservices-speech-sdk": "^1.45.0"
+    "microsoft-cognitiveservices-speech-sdk": "^1.38.0"
   },
   "devDependencies": {
+    "typescript": "^5.4.0",
+    "ts-loader": "^9.5.1",
     "copy-webpack-plugin": "^11.0.0",
-    "webpack": "^5.101.0",
+    "webpack": "^5.90.0",
     "webpack-cli": "^5.1.4",
-    "webpack-dev-server": "^4.15.2"
+    "webpack-dev-server": "^4.15.1"
   }
 }
