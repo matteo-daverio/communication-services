@@ -24,6 +24,10 @@ let speechRecognizer;
 let isSpeechRecognitionActive = false;
 let transcriptionText = "";
 
+let speechSynthesizer;
+let isSpeechSynthesisActive = false;
+let selectedVoice = "it-IT-ElsaNeural"; // Voce di default
+
 // Keys
 const SPEECH_KEY = "8uWUVin2iDOx5aHsKRJqqLlWa0G6C08XKf3Zt7AYHf6vnV5Hkuz0JQQJ99BHACfhMk5XJ3w3AAAYACOGdnaN";
 const SPEECH_REGION = "swedencentral";
@@ -44,6 +48,10 @@ let transcriptionTextElement = document.getElementById('transcription-text');
 let startTranscriptionButton = document.getElementById('start-transcription-button');
 let stopTranscriptionButton = document.getElementById('stop-transcription-button');
 let callStatusIndicator = document.getElementById('call-status-indicator'); 
+
+let testTextInput = document.getElementById('test-text-input');
+let testSynthesisButton = document.getElementById('test-synthesis-button');
+let ttsTestResult = document.getElementById('tts-test-result');
 
 /**
  * Inizializza la configurazione di Azure Speech Services
@@ -172,6 +180,157 @@ async function stopSpeechRecognition() {
 }
 
 /**
+ * Inizializza Azure Speech Synthesis
+ */
+async function initializeSpeechSynthesis() {
+    try {
+        console.log('Inizializzazione Speech Synthesis...');
+        
+        if (!speechConfig) {
+            // Riusa la configurazione esistente o creane una nuova
+            speechConfig = speechSdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
+        }
+        
+        // Configura la lingua per la sintesi
+        speechConfig.speechSynthesisLanguage = "it-IT";
+        speechConfig.speechSynthesisVoiceName = selectedVoice;
+        
+        // Crea il synthesizer
+        speechSynthesizer = new speechSdk.SpeechSynthesizer(speechConfig);
+        
+        console.log('Speech Synthesis configurato correttamente');
+        console.log(`Voce selezionata: ${selectedVoice}`);
+        
+        return true;
+        
+    } catch (error) {
+        console.error('Errore nell\'inizializzazione di Speech Synthesis:', error);
+        return false;
+    }
+}
+
+/**
+ * Sintetizza il testo in audio
+ * Step 3.1: Implementazione sintesi base
+ */
+async function synthesizeText(text) {
+    try {
+        if (!text || !text.trim()) {
+            console.log('❌ Nessun testo da sintetizzare');
+            return false;
+        }
+        
+        if (!speechSynthesizer) {
+            const success = await initializeSpeechSynthesis();
+            if (!success) {
+                throw new Error('Inizializzazione Speech Synthesis fallita');
+            }
+        }
+        
+        console.log(`🔊 Sintetizzo: "${text}"`);
+        isSpeechSynthesisActive = true;
+        updateTTSButtons();
+        
+        // Crea SSML con parametri personalizzati
+        const ssml = createSSML(text, selectedVoice);
+
+        console.log(`SSML generato:\n${ssml}`);
+        
+        return new Promise((resolve, reject) => {
+            speechSynthesizer.speakSsmlAsync(
+                ssml,
+                (result) => {
+                    isSpeechSynthesisActive = false;
+                    updateTTSButtons();
+                    
+                    if (result.reason === speechSdk.ResultReason.SynthesizingAudioCompleted) {
+                        console.log('✅ Sintesi completata con successo');
+                        resolve(true);
+                    } else {
+                        console.error('❌ Sintesi fallita:', result.errorDetails);
+                        reject(new Error(result.errorDetails));
+                    }
+                },
+                (error) => {
+                    isSpeechSynthesisActive = false;
+                    updateTTSButtons();
+                    console.error('❌ Errore nella sintesi:', error);
+                    reject(error);
+                }
+            );
+        });
+        
+    } catch (error) {
+        isSpeechSynthesisActive = false;
+        updateTTSButtons();
+        console.error('Errore nella sintesi del testo:', error);
+        throw error;
+    }
+}
+
+/**
+ * Crea SSML personalizzato per la sintesi
+ */
+function createSSML(text, voice) {
+    return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="it-IT">
+            <voice name="${voice}">
+                ${text}
+            </voice>
+        </speak>`;
+}
+
+/**
+ * Aggiorna lo stato dei pulsanti TTS
+ */
+function updateTTSButtons() {
+    if (testSynthesisButton) {
+        testSynthesisButton.disabled = isSpeechSynthesisActive;
+        testSynthesisButton.textContent = isSpeechSynthesisActive ? '🔊 Sintetizzando...' : '🔊 Testa Sintesi';
+    }
+}
+
+/**
+ * Testa la sintesi vocale
+ */
+async function testSpeechSynthesis() {
+    try {
+        const testText = testTextInput ? testTextInput.value.trim() : 'Ciao, questo è un test della sintesi vocale italiana.';
+        
+        if (!testText) {
+            if (ttsTestResult) {
+                ttsTestResult.innerHTML = '<div style="color: orange;">⚠️ Inserisci del testo da sintetizzare</div>';
+            }
+            return false;
+        }
+        
+        if (ttsTestResult) {
+            ttsTestResult.innerHTML = '<div style="color: blue;">🔊 Sintesi in corso...</div>';
+        }
+        
+        const success = await synthesizeText(testText);
+        
+        if (success && ttsTestResult) {
+            ttsTestResult.innerHTML = `
+                <div style="color: green;">
+                    ✅ Sintesi completata!<br>
+                    - Testo: "${testText}"<br>
+                    - Voce: ${selectedVoice}<br>
+                </div>
+            `;
+        }
+        
+        return success;
+        
+    } catch (error) {
+        console.error('Errore nel test di sintesi:', error);
+        if (ttsTestResult) {
+            ttsTestResult.innerHTML = `<div style="color: red;">❌ Errore: ${error.message}</div>`;
+        }
+        return false;
+    }
+}
+
+/**
  * Aggiorna la visualizzazione della trascrizione
  */
 function updateTranscriptionDisplay(text, isFinal) {
@@ -201,6 +360,8 @@ function updateUIButtons() {
         stopTranscriptionButton.disabled = !isSpeechRecognitionActive;
     }
     
+    updateTTSButtons();
+
     // Mostra informazioni sullo stato
     if (isCallActive) {
         console.log('🔄 Pulsanti aggiornati - Modalità automatica attiva');
@@ -606,7 +767,7 @@ hangUpCallButton.addEventListener("click", async () => {
 /**
  * Event listeners per i pulsanti - Step 2.2
  */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     // Pulsanti trascrizione (Step 2.2)
     if (startTranscriptionButton) {
         startTranscriptionButton.onclick = async () => {
@@ -621,6 +782,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (stopTranscriptionButton) {
         stopTranscriptionButton.onclick = async () => {
             await stopSpeechRecognition();
+        };
+    }
+
+    // Event listeners per TTS - Step 3.1
+    if (testSynthesisButton) {
+        testSynthesisButton.onclick = async () => {
+            await testSpeechSynthesis();
         };
     }
     
